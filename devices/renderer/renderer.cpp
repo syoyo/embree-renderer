@@ -24,7 +24,6 @@
 
 namespace embree
 {
-  //double upload_time = 0;
   /******************************************************************************/
   /*                                  State                                     */
   /******************************************************************************/
@@ -33,16 +32,24 @@ namespace embree
   Vector3f g_camPos    = Vector3f(0.0f,0.0f,0.0f);
   Vector3f g_camLookAt = Vector3f(1.0f,0.0f,0.0f);
   Vector3f g_camUp     = Vector3f(0,1,0);
-  float g_camFieldOfView = 64.0f;
+  float g_camFieldOfView = 75.0f; // @syoyo: Oculus. // 64
   float g_camRadius = 0.0f;
 
   /* rendering device and global handles */
   Handle<Device::RTRenderer> g_renderer = NULL;
   Handle<Device::RTToneMapper> g_tonemapper = NULL;
-  Handle<Device::RTFrameBuffer> g_frameBuffer = NULL;
+  Handle<Device::RTFrameBuffer> g_frameBuffer0 = NULL;
+  //Handle<Device::RTFrameBuffer> g_frameBuffer1 = NULL;
   Handle<Device::RTImage> g_backplate = NULL;
   Handle<Device::RTScene> g_render_scene = NULL;
   std::vector<Handle<Device::RTPrimitive> > g_prims;
+
+  std::string g_redisHostname = "127.0.0.1";
+  int g_redisPort = 6379;
+
+  std::string g_sampleMapFile = "../assets/foveated_samplemap.dat";
+
+  bool g_hmd = true;
 
   /* rendering settings */
   std::string g_scene = "default";
@@ -58,9 +65,10 @@ namespace embree
   int g_refine = 1;                       //!< refinement mode
   float g_gamma = 1.0f;
   bool g_vignetting = false;
-  bool g_fullscreen = false;
+  bool g_fullscreen = true;
   size_t g_width = 512;
   size_t g_height = 512;
+  bool g_stereo = true;
   std::string g_format = "RGBA8";
   std::string g_rtcore_cfg = "";
   std::string g_outFileName = "";
@@ -79,7 +87,7 @@ namespace embree
   /*                            Object Creation                                 */
   /******************************************************************************/
 
-  Handle<Device::RTCamera> createCamera(const AffineSpace3f& space)
+  Handle<Device::RTCamera> createCamera(const AffineSpace3f& space, int stereoTy = 0, float stereoDistance = 0.0f, int stereoPixelMargin = 0, float aspectRatio = 1.0)
   {
     /*! pinhole camera */
     if (g_camRadius == 0.0f)
@@ -87,17 +95,22 @@ namespace embree
       Handle<Device::RTCamera> camera = g_device->rtNewCamera("pinhole");
       g_device->rtSetTransform(camera, "local2world", copyToArray(space));
       g_device->rtSetFloat1(camera, "angle", g_camFieldOfView);
-      g_device->rtSetFloat1(camera, "aspectRatio", float(g_width) / float(g_height));
+      g_device->rtSetInt1(camera, "stereoType", stereoTy);
+      g_device->rtSetInt1(camera, "stereoPixelMargin", stereoPixelMargin);
+      g_device->rtSetFloat1(camera, "stereoDistance", stereoDistance);
+      //g_device->rtSetFloat1(camera, "aspectRatio", float(0.5f*g_width) / float(g_height)); // stereo
+      g_device->rtSetFloat1(camera, "aspectRatio", aspectRatio); // stereo
       g_device->rtCommit(camera);
       return camera;
     }
     /*! depth of field camera */
     else
     {
+      assert(0); // @todo
       Handle<Device::RTCamera> camera = g_device->rtNewCamera("depthoffield");
       g_device->rtSetTransform(camera, "local2world", copyToArray(space));
       g_device->rtSetFloat1(camera, "angle", g_camFieldOfView);
-      g_device->rtSetFloat1(camera, "aspectRatio", float(g_width) / float(g_height));
+      g_device->rtSetFloat1(camera, "aspectRatio", float(0.5f*g_width) / float(g_height)); // stereo
       g_device->rtSetFloat1(camera, "lensRadius", g_camRadius);
       g_device->rtSetFloat1(camera, "focalDistance", length(g_camLookAt - g_camPos));
       g_device->rtCommit(camera);
@@ -128,6 +141,10 @@ namespace embree
     g_renderer = g_device->rtNewRenderer("pathtracer");
     if (g_depth >= 0) g_device->rtSetInt1(g_renderer, "maxDepth", g_depth);
     g_device->rtSetInt1(g_renderer, "sampler.spp", g_spp);
+
+    // @syoyo
+    g_device->rtSetString(g_renderer, "samplermapfile", g_sampleMapFile.c_str());
+
     g_device->rtCommit(g_renderer);
 
     g_tonemapper = g_device->rtNewToneMapper("default");
@@ -135,14 +152,15 @@ namespace embree
     g_device->rtSetBool1(g_tonemapper, "vignetting", g_vignetting);
     g_device->rtCommit(g_tonemapper);
 
-    g_frameBuffer = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
+    g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
     g_backplate = NULL;
   }
 
   void clearGlobalObjects() {
     g_renderer = null;
     g_tonemapper = null;
-    g_frameBuffer = null;
+    g_frameBuffer0 = null;
+    //g_frameBuffer1 = null;
     g_backplate = null;
     g_prims.clear();
     g_render_scene = null;
@@ -222,12 +240,12 @@ namespace embree
     g_device->rtSetInt1(g_renderer, "showprogress", 1);
     g_device->rtCommit(g_renderer);
     for (size_t i=0; i<g_num_frames; i++)
-      g_device->rtRenderFrame(g_renderer, camera, scene, g_tonemapper, g_frameBuffer, 0);
+      g_device->rtRenderFrame(g_renderer, camera, scene, g_tonemapper, g_frameBuffer0, 0);
     for (int i=0; i<g_numBuffers; i++)
-      g_device->rtSwapBuffers(g_frameBuffer);
+      g_device->rtSwapBuffers(g_frameBuffer0);
     
     /* store to disk */
-    void* ptr = g_device->rtMapFrameBuffer(g_frameBuffer);
+    void* ptr = g_device->rtMapFrameBuffer(g_frameBuffer0);
     Ref<Image> image = null;
     if      (g_format == "RGB8"        )  image = new Image3c(g_width, g_height, (Col3c*)ptr); 
     else if (g_format == "RGBA8"       )  image = new Image4c(g_width, g_height, (Col4c*)ptr);
@@ -235,7 +253,7 @@ namespace embree
     else if (g_format == "RGBA_FLOAT32")  image = new Image4f(g_width, g_height, (Col4f*)ptr);
     else throw std::runtime_error("unsupported framebuffer format: "+g_format);
     storeImage(image, fileName);
-    g_device->rtUnmapFrameBuffer(g_frameBuffer);
+    g_device->rtUnmapFrameBuffer(g_frameBuffer0);
     g_rendered = true;
   }
 
@@ -489,18 +507,22 @@ namespace embree
       else if (tag == "-angle")  g_camFieldOfView = cin->getFloat();
       else if (tag == "-fov")    g_camFieldOfView = cin->getFloat();
       else if (tag == "-radius") g_camRadius      = cin->getFloat();
+      else if (tag == "-redis_host") g_redisHostname = cin->getString();
+      else if (tag == "-redis_port") g_redisPort = cin->getInt();
+      else if (tag == "-nohmd") g_hmd = false;
+      else if (tag == "-samplemapfile") g_sampleMapFile = cin->getString();
 
       /* frame buffer size */
       else if (tag == "-size") {
         g_width = cin->getInt();
         g_height = cin->getInt();
-        g_frameBuffer = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
+        g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
       }
 
       /* set framebuffer format */
       else if (tag == "-framebuffer" || tag == "-fb") {
         g_format = cin->getString();
-        g_frameBuffer = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
+        g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(), g_width, g_height, g_numBuffers);
       }
 
       /* full screen mode */
@@ -583,6 +605,10 @@ namespace embree
       /* display image */
       else if (tag == "-display") 
         g_outFileName = ""; //displayMode();
+
+      /* stereo */
+      else if (tag == "-stereo") 
+        g_stereo = true;
 
       /* regression testing */
       else if (tag == "-regression")
@@ -688,6 +714,15 @@ namespace embree
         std::cout << "-[no]refine" << std::endl;
         std::cout << "  Enables (default) or disables the refinement display mode." << std::endl;
         std::cout << std::endl;
+        std::cout << "-stereo" << std::endl;
+        std::cout << "  Enable stereo rendering." << std::endl;
+        std::cout << std::endl;
+        std::cout << "-redis_host STR" << std::endl;
+        std::cout << "  Redis hostname." << std::endl;
+        std::cout << std::endl;
+        std::cout << "-redis_port N" << std::endl;
+        std::cout << "  Redis port." << std::endl;
+        std::cout << std::endl;
         std::cout << "-regression" << std::endl;
         std::cout << "  Runs a stress test of the system." << std::endl;
         std::cout << std::endl;
@@ -726,9 +761,6 @@ namespace embree
 
     /*! parse command line */  
     parseCommandLine(stream, FileName());
-
-    //upload_time = getSeconds();
-    //PRINT(upload_time);
 
     /*! if we did no render yet but have loaded a scene, switch to display mode */
     if (!g_rendered && g_prims.size()) { //displayMode();
