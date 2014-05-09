@@ -33,6 +33,8 @@
 #  include <GL/glut.h>
 #endif
 
+#define USE_STEREO_MARGIN (0)
+
 namespace embree
 {
   /* logging settings */
@@ -48,6 +50,7 @@ namespace embree
   void clearGlobalObjects();
 
   // @syoyo
+  static float gApplyDistortion = 1.0;
   extern std::string g_sampleMapFile;
 
   extern bool g_hmd;
@@ -74,7 +77,7 @@ namespace embree
   extern Handle<Device::RTRenderer> g_renderer;
   extern Handle<Device::RTToneMapper> g_tonemapper;
   extern Handle<Device::RTFrameBuffer> g_frameBuffer0;
-  //extern Handle<Device::RTFrameBuffer> g_frameBuffer1;
+  extern Handle<Device::RTFrameBuffer> g_frameBuffer1;
   extern Handle<Device::RTScene> g_render_scene;
 
   void setLight(Handle<Device::RTPrimitive> light);
@@ -98,16 +101,22 @@ namespace embree
   static bool  g_hmdInitialized = false;
   static float g_hmdMove = 0.0;
 
+  static float g_stereoOffset = 0.0; 
+  static float g_rightOffset = 0.0; 
+
   //static int   g_stereoPixelMargin = 108; // @fixme 
+#if USE_STEREO_MARGIN
   static int   g_stereoPixelMargin = 92; // @fixme 
+#else
+  static int   g_stereoPixelMargin = 0; // @fixme 
+#endif
 
   const char*  g_fragShader = "../assets/postprocess.fs";
   const char*  g_vertShader = "../assets/postprocess.vs";
 
   typedef struct
   {
-    GLuint  fboID;
-    GLuint  renderToTexID;
+    GLuint  renderToTexID[2]; // stereo
     int     width, height;
     int     stereoMargin;
 
@@ -425,29 +434,21 @@ namespace embree
   GenRenderToTexture(
     RenderConfig& config)
   {
-    glGenTextures(1, &config.renderToTexID);
+    glGenTextures(2, config.renderToTexID);
     CheckGLErrors("glGenTextures");
 
-    glBindTexture(GL_TEXTURE_2D, config.renderToTexID);
-    CheckGLErrors("glBindTextures");
+    for (int i = 0; i < 2; i++) {
+      glBindTexture(GL_TEXTURE_2D, config.renderToTexID[i]);
+      CheckGLErrors("glBindTextures");
 
-    // Give an empty image to OpenGL
-    glTexImage2D(GL_TEXTURE_2D, 0,GL_RGBA8, config.width + config.stereoMargin, config.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    CheckGLErrors("glTexImage2D");
+      // Give an empty image to OpenGL
+      glTexImage2D(GL_TEXTURE_2D, 0,GL_RGBA8, config.width + config.stereoMargin, config.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+      CheckGLErrors("glTexImage2D");
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
-    //glGenFramebuffersEXT(1, &config.fboID);
-    //CheckGLErrors("glGenFramebuffersEXT");
-    //glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, config.fboID);
-    //CheckGLErrors("glBindFramebufferEXT fbo");
-
-    //// Attach a texture to the FBO 
-    //glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, config.renderToTexID, 0);
-    //CheckGLErrors("glFramebufferTexture2DEXT");
-    // 
-    //glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+    }
 
     return true;
   }
@@ -455,7 +456,7 @@ namespace embree
   static void
   ResizeTexture(RenderConfig& config) {
 
-    glDeleteTextures(1, &config.renderToTexID);
+    glDeleteTextures(2, config.renderToTexID);
     CheckGLErrors("glDeleteTextures");
     //glDeleteFramebuffersEXT(1, &config.fboID);
     //CheckGLErrors("glDeleteFramebuffersEXT");
@@ -513,6 +514,15 @@ namespace embree
     glUniform1i(glGetUniformLocation(config.program, "Texture0"), 0);
     CheckGLErrors("Texture0");
 
+    glUniform1i(glGetUniformLocation(config.program, "Texture1"), 1);
+    CheckGLErrors("Texture1");
+
+    glUniform1f(glGetUniformLocation(config.program, "RightOffset"), g_rightOffset);
+    CheckGLErrors("RightOffset");
+
+    glUniform1f(glGetUniformLocation(config.program, "ApplyDistortion"), gApplyDistortion);
+    CheckGLErrors("ApplyDistortion");
+
     glUniform2fv(glGetUniformLocation(config.program, "LensCenter"), 1, LensCenter);
     CheckGLErrors("LensCenter");
     glUniform2fv(glGetUniformLocation(config.program, "ScreenCenter"), 1, ScreenCenter);
@@ -558,9 +568,18 @@ namespace embree
     glLoadIdentity();
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, config.renderToTexID);
+    glBindTexture(GL_TEXTURE_2D, config.renderToTexID[0]);
     CheckGLErrors("glBindTexture");
     glEnable(GL_TEXTURE_2D);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, config.renderToTexID[1]);
+    CheckGLErrors("glBindTexture");
+    glEnable(GL_TEXTURE_2D);
+
+    glActiveTexture(GL_TEXTURE0);
+
+    //glEnable(GL_TEXTURE_2D);
     glDisable(GL_DEPTH_TEST);
     glColor3f(0.0, 0.0, 1.0);
     glBegin(GL_QUADS);
@@ -930,6 +949,13 @@ namespace embree
       g_pause = !g_pause;
       break;
     }
+    case 'd' :
+      if (gApplyDistortion > 0.5) {
+        gApplyDistortion = 0.0;
+      } else {
+        gApplyDistortion = 1.0;
+      }
+      break; 
     case 'c' : {
       AffineSpace3f cam(g_camSpace.l,g_camSpace.p);
       std::cout << "-vp " << g_camPos.x    << " " << g_camPos.y    << " " << g_camPos.z    << " " << std::endl
@@ -945,22 +971,36 @@ namespace embree
     case 'l' : g_camRadius = max(0.0f, g_camRadius-1); break;
     case 'L' : g_camRadius += 1; break;
 
-    // @todo { Update texture size }
+    case 'u' : 
+      g_rightOffset -= 0.005;
+      g_rightOffset = std::max(g_rightOffset, 0.0f);
+      printf("right offset = %f\n", g_rightOffset);
+      break;
+    case 'i' : 
+      g_rightOffset += 0.005;
+      printf("right offset = %f\n", g_rightOffset);
+      break;
+
     case 'j' : {
-      g_stereoPixelMargin += 1;
-      printf("stereo margin = %d\n", g_stereoPixelMargin);
-      g_renderConfig.stereoMargin = g_stereoPixelMargin;
-      ResizeTexture(g_renderConfig);
-      g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(),g_width/2+g_stereoPixelMargin,g_height,g_numBuffers);
+      g_stereoOffset += 0.1;
+      printf("stereo offset = %f\n", g_stereoOffset);
+      //g_stereoPixelMargin += 1;
+      //printf("stereo margin = %d\n", g_stereoPixelMargin);
+      //g_renderConfig.stereoMargin = g_stereoPixelMargin;
+      //ResizeTexture(g_renderConfig);
+      //g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(),g_width/2+g_stereoPixelMargin,g_height,g_numBuffers);
       break;
     }
     case 'k' : {
-      g_stereoPixelMargin -= 1;
-      g_stereoPixelMargin = std::max(g_stereoPixelMargin, 0);
-      printf("stereo = margin %d\n", g_stereoPixelMargin); 
-      g_renderConfig.stereoMargin = g_stereoPixelMargin;
-      ResizeTexture(g_renderConfig);
-      g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(),g_width/2+g_stereoPixelMargin,g_height,g_numBuffers);
+      g_stereoOffset -= 0.1;
+      //g_stereoOffset = std::max(g_stereoOffset, 0.0f);
+      printf("stereo offset = %f\n", g_stereoOffset);
+      //g_stereoPixelMargin -= 1;
+      //g_stereoPixelMargin = std::max(g_stereoPixelMargin, 0);
+      //printf("stereo = margin %d\n", g_stereoPixelMargin); 
+      //g_renderConfig.stereoMargin = g_stereoPixelMargin;
+      //ResizeTexture(g_renderConfig);
+      //g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(),g_width/2+g_stereoPixelMargin,g_height,g_numBuffers);
       break;
       }
     case '\033': case 'q': case 'Q':
@@ -1158,13 +1198,14 @@ namespace embree
     g_resetAccumulation = false;
 
 
-    // @syoyo: SREREO HACK. off-axis
-    Vector3f camPosL = g_camPos + Vector3f(0.0, 0.0, 0.0);
-    Vector3f camLookAtL = g_camLookAt + Vector3f(0.0, 0.0, 0.0);
+    // @syoyo: SREREO
+    float scale = 100.0;
+    Vector3f camPosL = g_camPos + Vector3f(-scale*g_stereoOffset/2.0, 0.0, 0.0);
+    Vector3f camLookAtL = g_camLookAt + Vector3f(-scale*g_stereoOffset/2.0, 0.0, 0.0);
     AffineSpace3f camSpaceL = AffineSpace3f::lookAtPoint(camPosL, camLookAtL, g_camUp);
 
-    Vector3f camPosR = g_camPos + Vector3f(0.0, 0.0, 0.0);
-    Vector3f camLookAtR = g_camLookAt + Vector3f(0.0, 0.0, 0.0);
+    Vector3f camPosR = g_camPos + Vector3f(scale*g_stereoOffset/2.0, 0.0, 0.0);
+    Vector3f camLookAtR = g_camLookAt + Vector3f(scale*g_stereoOffset/2.0, 0.0, 0.0);
     AffineSpace3f camSpaceR = AffineSpace3f::lookAtPoint(camPosR, camLookAtR, g_camUp);
 
     /* render image */
@@ -1174,10 +1215,10 @@ namespace embree
     /* render into framebuffer */
     g_device->rtRenderFrame(g_renderer,cameraL,g_render_scene,g_tonemapper,g_frameBuffer0,accumulate);
 
-    //g_device->rtRenderFrame(g_renderer,cameraR,g_render_scene,g_tonemapper,g_frameBuffer1,accumulate);
+    g_device->rtRenderFrame(g_renderer,cameraR,g_render_scene,g_tonemapper,g_frameBuffer1,accumulate);
 
     g_device->rtSwapBuffers(g_frameBuffer0);
-    //g_device->rtSwapBuffers(g_frameBuffer1);
+    g_device->rtSwapBuffers(g_frameBuffer1);
 
     /* draw image in OpenGL */
     double render_t0 = getSeconds();
@@ -1185,6 +1226,7 @@ namespace embree
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+#if USE_STEREO_MARGIN
 
     void* src_ptr = g_device->rtMapFrameBuffer(g_frameBuffer0);
     UpdateTex(g_renderConfig.renderToTexID, (unsigned char*)src_ptr, g_width/2+g_stereoPixelMargin, g_height);
@@ -1248,12 +1290,23 @@ namespace embree
 
       delete [] dst_ptr;
     }
+#else
+
+    UpdateTex(g_renderConfig.renderToTexID[0], (unsigned char*)g_device->rtMapFrameBuffer(g_frameBuffer0), g_width/2+g_stereoPixelMargin, g_height);
+
+    UpdateTex(g_renderConfig.renderToTexID[1], (unsigned char*)g_device->rtMapFrameBuffer(g_frameBuffer1), g_width/2+g_stereoPixelMargin, g_height);
+
+    assert(g_format == "RGBA8");
+
+    PostProcessRender(g_renderConfig, /*eyeType=*/0);
+
+#endif
                                                     
     glFlush();
     glutSwapBuffers();
 
     g_device->rtUnmapFrameBuffer(g_frameBuffer0);
-    //g_device->rtUnmapFrameBuffer(g_frameBuffer1);
+    g_device->rtUnmapFrameBuffer(g_frameBuffer1);
 
     double render_t1 = getSeconds();
 
@@ -1303,7 +1356,7 @@ namespace embree
 
     // @syoyo: 
     g_frameBuffer0 = g_device->rtNewFrameBuffer(g_format.c_str(),w/2+g_stereoPixelMargin,h,g_numBuffers);
-    //g_frameBuffer1 = g_device->rtNewFrameBuffer(g_format.c_str(),w/2,h,g_numBuffers);
+    g_frameBuffer1 = g_device->rtNewFrameBuffer(g_format.c_str(),w/2,h,g_numBuffers);
     glViewport(0, 0, (GLsizei)g_width, (GLsizei)g_height);
     g_resetAccumulation = true;
   }
@@ -1439,7 +1492,6 @@ namespace embree
     InitRenderConfig(g_renderConfig, g_width/2, g_height, g_stereoPixelMargin);
     PreparePostProcessShader(g_renderConfig);
     GenRenderToTexture(g_renderConfig);
-    //g_renderConfig.renderToTexID = GenDummyTex(g_renderConfig.width + g_renderConfig.stereoMargin, g_renderConfig.height); 
 
     glutDisplayFunc(displayFunc);
     glutIdleFunc(idleFunc);

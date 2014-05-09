@@ -39,7 +39,7 @@ namespace embree
   Handle<Device::RTRenderer> g_renderer = NULL;
   Handle<Device::RTToneMapper> g_tonemapper = NULL;
   Handle<Device::RTFrameBuffer> g_frameBuffer0 = NULL;
-  //Handle<Device::RTFrameBuffer> g_frameBuffer1 = NULL;
+  Handle<Device::RTFrameBuffer> g_frameBuffer1 = NULL;
   Handle<Device::RTImage> g_backplate = NULL;
   Handle<Device::RTScene> g_render_scene = NULL;
   std::vector<Handle<Device::RTPrimitive> > g_prims;
@@ -160,7 +160,7 @@ namespace embree
     g_renderer = null;
     g_tonemapper = null;
     g_frameBuffer0 = null;
-    //g_frameBuffer1 = null;
+    g_frameBuffer1 = null;
     g_backplate = null;
     g_prims.clear();
     g_render_scene = null;
